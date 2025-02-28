@@ -1,0 +1,1152 @@
+---
+title: "DS202A - W08 Summative"
+author: <36914>
+output: html
+self-contained: true
+---
+
+# DS202A W08 SUMMATIVE
+
+This file contains answers for the DS202A AT8 summative which is split into 3 parts.
+
+This code loads the install package and library function for the packages necessary for this summative.
+
+# Install the required packages
+
+install.packages("readr") install.packages("magrittr") install.packages("dplyr") install.packages("utils") install.packages("naniar") install.packages("skimr") install.packages("MissMech") install.packages("mice") install.packages("ggplot2") install.packages("rsample") install.packages("yardstick") install.packages("broom") install.packages("tidyr") install.packages("purrr") install.packages("forcats") install.packages("parsnip") install.packages("workflows") install.packages("tune") install.packages("vip") install.packages("themis") install.packages("rmarkdown") (Note: Inserting the above chunk into the html prevented my html from knitting)
+
+```{r}
+# Load the libraries
+library(readr)
+library(magrittr)
+library(dplyr)
+library(utils)
+library(naniar)
+library(skimr)
+library(MissMech)
+library(mice)
+library(ggplot2)
+library(rsample)
+library(yardstick)
+library(broom)
+library(tidyr)
+library(purrr)
+library(forcats)
+library(parsnip)
+library(workflows)
+library(tune)
+library(vip)
+library(themis)
+```
+
+## Part 1
+
+In both parts 1 and 2, the AQBench data set, which contains global long-term air quality metrics, will be utilized.
+
+### Part 1.1: Cleaning the Data Set
+
+The data set will first be loaded into a data frame named "aq_bench." Time will then be spent exploring and familiarizing with the data set to understand its structure and contents.
+
+```{r}
+library(readr)
+AQbench_dataset <- read_csv("AQbench_dataset.csv")
+View(AQbench_dataset)
+```
+
+Ensuring the data set is clean is crucial to avoid inaccurate conclusions, unreliable insights, and flawed models. Missing values or inconsistencies can negatively impact the performance of machine learning models. By cleaning the data, its predictive power is enhanced [(Buhl, 2023)](https://encord.com/blog/data-cleaning-data-preprocessing/).
+
+The data set will be filtered to create a new data frame, "aq_bench_filtered," by removing the 'lat,' 'lon,' 'data set,' and 'id' columns. This step focuses the analysis on the variables most relevant to the upcoming analyses.
+
+```{r}
+aq_bench_filtered <- AQbench_dataset %>%
+   select(-lat, -lon, -dataset, - id)
+View(aq_bench_filtered)
+```
+
+During the data exploration process, it was identified that some values were recorded as -999, which are considered missing data. Handling missing data is crucial, as it can skew results and reduce the accuracy of the analysis. To address this, the 'replace_with_na_all function from the 'naniar' package will be used to replace all -999 values with 'NA' to appropriately represent missing data.
+
+```{r}
+aq_bench_filtered <- aq_bench_filtered %>%
+  replace_with_na_all (condition = ~ .x == -999.00)
+```
+
+To gain a clearer understanding of the extent of missing values, the 'skim' function from the 'skimr' package will be used. This function offers detailed summaries of each variable, including the number of missing (NA) values for each column. Additionally, the 'vis_miss' function will be employed to generate a visual representation of the missing data, helping to identify patterns or clusters of missing value
+
+```{r}
+skim(aq_bench_filtered)
+vis_miss(aq_bench_filtered) 
+```
+
+The 'skimr' function, reveals missing values in the following variables: o3_daytime_avg, o3_nighttime_avg, o3_median, o3_perc25, o3_perc75, o3_perc90, o3_perc98, o3_dma8eu, o3_avgdma8epax, o3_drmdmax1h, o3_w90, o3_aot40, o3_nvgt070, o3_nvgt100.
+
+The 'vis_miss' function indicates that approximately **5.2%** of the data set consists of missing values, while **94.8%** of the data is present. To better understand the underlying cause of these missing values, the analysis will examine whether the missingness is Missing Completely at Random (MCAR), Missing at Random (MAR), or Missing Not at Random (MNAR), as outlined by [Rubin (1976)](https://doi.org/10.1093/biomet/63.3.581).
+
+To test for MCAR, which assumes that the probability of a value being missing is independent of both observed and unobserved data, [Jamshidian et al.'s](https://doi.org/10.1007/s11336-010-9175-3) MCAR test will be applied using the 'MissMech' package. The null hypothesis tested will be the equality of co-variances between the missing and non-missing data groups. Only the variables identified as having missing values will be selected for this test, and a new data frame, 'selected_vars,' will be created for the analysis.
+
+```{r}
+selected_vars <- c( "o3_daytime_avg", "o3_nighttime_avg", 
+                   "o3_median", "o3_perc25", "o3_perc75", "o3_perc90", 
+                   "o3_perc98", "o3_dma8eu", "o3_avgdma8epax", "o3_drmdmax1h", 
+                   "o3_w90", "o3_aot40", "o3_nvgt070", "o3_nvgt100")
+
+# Select only these columns
+selected_data <- aq_bench_filtered[, selected_vars]
+
+selected_data <- aq_bench_filtered %>% select(all_of(selected_vars))
+out.MCAR.ws <- TestMCARNormality(selected_data, del.lesscases = 1)
+summary(out.MCAR.ws)
+
+```
+
+The p-value for the non-parametric test of homoscedasticity (equality of variances) is below .05, leading to the rejection of the null hypothesis that the covariances are equal. This suggests that the data is not MCAR.
+
+Based on two key observations, it can be assumed that the missing data is Missing Not At Random (MNAR):
+
+1.  The missing data is exclusively in the ozone-related variables, which strongly suggests that the missingness is related to specific characteristics of the ozone data itself, potentially due to measurement issues or sensor failures that affect only this variable.
+2.  The absence of missing data in other variables indicates that the missingness is not a result of a broader systematic error in the data collection process. If the missingness were due to such an error, one would expect missing values across multiple variables. However, the issue is confined to the ozone data, reinforcing the conclusion that the missingness is likely specific to this subset.
+
+Given these factors, Multiple Imputation will be used to address the missing data. Multiple Imputation is a robust technique for handling missing data by estimating and replacing missing values multiple times [(Li et al., 2016)](https://doi.org/10.1001/jama.2015.15281). The 'mice' function will be employed to impute missing data using the **Predictive Mean Matching** (PMM) method, which predicts missing values by finding observed data points similar to the missing values through a regression model. To reflect different plausible values for the missing data, 5 imputed data sets (m=5) will be generated. The maximum number of iterations will be set to 10, allowing the algorithm to run for up to 10 iterations to refine the imputation process. Finally, the imputed data sets will be combined into a single, completed data set.
+
+```{r}
+colnames(aq_bench_filtered) <- gsub("-", "_", colnames(aq_bench_filtered))
+aq_bench_filtered <- mice(aq_bench_filtered, method = "pmm", m = 5, maxot = 10)
+summary(aq_bench_filtered)
+aq_bench_filtered <- complete(aq_bench_filtered)
+head(aq_bench_filtered)
+```
+
+To verify the success of the multiple imputation process, the 'vis_miss' function will be run again. If the imputation was successful, the missing data points should be replaced, and the visualization should reflect a reduction or elimination of missingness across the data set.
+
+```{r}
+vis_miss(aq_bench_filtered)
+```
+
+Following the multiple imputation process, it is evident there are no remaining missing values, and the data set is now fully complete, with 100% of the data present.
+
+### Part 1.2: Identifying the Top and Bottom 5 countries
+
+To identify the five countries with the highest number of rows in the data set, the 'group_by' function will be used to group the data by the 'country' variable, followed by sorting the groups in descending order. The countries with the most observations will appear first, and the 'slice_head' function will be used to extract the top five countries with the highest number of rows.
+
+Similarly, to find the five countries with the fewest rows in the data set, the data will be grouped by country and sorted in ascending order. The 'slice_head' function will then be applied to extract the first five rows, corresponding to the countries with the fewest observations.
+
+```{r}
+aq_bench_filtered %>%
+  group_by(country) %>%
+  summarise(count = n()) %>%
+   arrange(desc(count)) %>%
+  slice_head(n=5)             
+
+aq_bench_filtered %>%
+ group_by(country) %>% 
+   summarise(count = n()) %>%
+  arrange(count) %>%
+  slice_head(n=5) 
+```
+
+The results reveal that the top five countries with the most observations are as follows:
+
+1\. USA (1390) 2. Japan (1182) 3. Spain (440) 4. France (404) 5. Italy (361)
+
+In contrast, the bottom five countries with the fewest observations, listed in alphabetical order, are:
+
+1\. Algeria (1) 2. American Samoa (1) 3. Armenia (1) 4. Barbados (1) 5. Bermuda (1)
+
+### Part 1.3: Median NO2 by Type of Area
+
+To analyze the median NO2 (Nitrogen Dioxide) levels by type of area, the data set will first be grouped by the 'type of area' variable, ensuring that calculations are performed separately for each unique area type (e.g., urban, rural, suburban). Then, the median of the 'no2_column' will be calculated for each group, and the results will be stored in the 'median' variable.
+
+```{r}
+median <- aq_bench_filtered %>%
+  group_by(type_of_area) %>%              
+  summarize(median_no2 = median(no2_column)) 
+median
+```
+
+The output shows the Median NO2 values for each type of area:
+
+-   Remote: .81
+
+-   Rural: 2.32
+
+-   Suburban: 3.44
+
+-   Unknown: 2.46
+
+-   Urban: 4.05
+
+The analysis reveals that urban areas exhibit the highest NO2 levels, while remote areas show the lowest, which aligns with several logical factors. Urban areas are typically more densely populated, with higher levels of transportation (e.g., buses, cars, vans) and industrial activity [(Ministry for the Environment, 2021)](https://environment.govt.nz/facts-and-science/air/air-pollutants/nitrogen-dioxide-effects-health/). These sources contribute to the release of NO2 as a byproduct of fossil fuel combustion, resulting in elevated NO2 concentrations. In contrast, remote areas generally have fewer pollution sources, with limited traffic and industrial operations. Additionally, urban environments tend to have less greenery compared to remote or rural areas, where vegetation naturally helps to absorb pollutants.
+
+### Part 1.4: Population Density and O3
+
+The relationship between population density and O3 values will be explored, as this is crucial for understanding environmental monitoring, public health, and urban planning. O3, or ozone, is a gas present in the Earth's atmosphere [(DEFRA, 2023)](https://www.gov.uk/government/statistics/air-quality-statistics/concentrations-of-ozone.), formed and removed through various chemical and physical processes. While ozone plays an important role in the atmosphere, it can also have detrimental effects on human health and the environment.
+
+To visualize this relationship, a scatter plot will be created, as it is the most effective way to display the association between the two variables. Additionally, a red linear regression line will be added to the plot to highlight the trend between population density and O3 levels.
+
+```{r}
+ggplot(aq_bench_filtered, aes(x = population_density, y = o3_average_values)) +
+  geom_point(color = "lightblue", alpha = 0.6) +               
+  labs(title = "Relationship between Population Density and O3 Average Values",
+       x = "Population Density",
+       y = "O3 Average Values") +
+  theme_minimal() +
+  geom_smooth(method = "lm", color = "red", se = FALSE)   # Add a trend line
+```
+
+The graph illustrates a downward slope of the red trend line, suggesting a negative relationship between population density and average O3 values. As population density increases, average O3 levels decrease. This aligns with previous research, which has found that O3 concentration decreases with population density, exhibiting an elasticity of -.14. This implies that a 1% increase in population density leads to a .14% decrease in O3 concentration [(Borck & Schrauth, 2020).](https://doi.org/10.1016/j.regsciurbeco.2020.103596) These findings indicate that while ozone levels are often a concern in densely populated areas, other factors may have a greater influence on ozone concentrations. This may be because higher population density leads to higher levels of NOx (Nitrogen Oxides) which contributes to the degradation of ozone in urban areas [(Belgian Inter-regional Environmental Agency, n.d.).](https://www.irceline.be/en/documentation/faq/why-are-ozone-concentrations-higher-in-rural-areas-than-in-cities) This results in lower ozone concentrations compared to rural areas, where there is less NO (Nitrogen Oxide) to break down ozone, allowing it to accumulate.
+
+## Part 2
+
+In the following section, the focus will be on predicting 'o3_average_values'. Predicting 'o3_average_values' is important for several reasons. As noted earlier, ground-level ozone is detrimental to human health and forecasting its average concentration can help identify at-risk areas, enabling timely interventions. Additionally, predicting ozone levels can assist researchers in understanding the potential impact on agriculture and natural resources in specific regions.
+
+To achieve this, a baseline linear regression model will be created to predict 'o3_average_values'. Following this, feature selection will be applied to develop a new model, and its performance will be compared to that of the baseline model.
+
+### Part 2.1.1: Splitting the Data
+
+To begin, the data set will be split into training and testing subsets, which is a crucial step in building predictive models. By splitting the data, a training set is created that allows for an unbiased evaluation of the model's performance after training. The remaining data, known as the test set, will be used to assess how well the model generalizes to unseen data. The data set will be divided so that 75% is allocated to the training set, named 'df_train', ensuring enough data for the model to learn meaningful patterns. The remaining 25%, named 'df_test', will be used to robustly evaluate the model's performance. Additionally, the 'set.seed' function will be used to ensure the data split is reproducible, providing consistency in analysis and interpretation.
+
+```{r}
+set.seed(123)
+
+# Here, the data will be split using a 75/25 ratio.
+
+df_split <- initial_split(aq_bench_filtered, prop = 0.75)
+
+# Tibbles will be created with the training and test set.
+
+df_train <- training(df_split)
+df_test <- testing(df_split)
+```
+
+### Part 2.1.2: Creating the Baseline Model
+
+#### Examining Multicollinearity
+
+Now that the data has been split, a multivariate linear model will be created to model the relationship between multiple independent variables and the dependent variable, 'o3_average_values'. The model will be built using the training data set ('df_train').
+
+Before selecting the variables for the baseline model, an examination of multicollinearity will be conducted. Multicollinearity can make it challenging to assess the individual effect of each variable on 'o3_average_values', leading to unreliable coefficient estimates [(Vatcheva & Lee, 2016)](https://doi.org/10.4172/2161-1165.1000227.). To identify potential multicollinearity, a correlation threshold of .75 (considered high correlation) will be used, where correlations above this value will indicate possible multicollinearity among independent variables [(Statistic Solutions, 2009)](https://www.statisticssolutions.com/correlation-in-spss/).
+
+```{r}
+# The numeric data will be extracted and calculated in a correlation matrix
+numeric_data <-aq_bench_filtered %>% select(where(is.numeric))
+cor_matrix <- cor(numeric_data, use = "pairwise.complete.obs")
+
+# This will find highly correlated pairs
+high_cor <- as.data.frame(as.table(cor_matrix)) %>% 
+  filter(Var1 != Var2, abs(Freq) > 0.75) %>% 
+  arrange(desc(abs(Freq)))
+print(high_cor)
+
+```
+
+#### Building the Regression Model
+
+For the baseline model, variables representing land cover types and natural features, which are highly relevant to ozone dynamics, have been specified. Understanding the relationship between land cover types and ozone dynamics is essential for addressing air pollution challenges. Land cover types within a 25km radius can significantly influence local ozone concentrations through both direct and indirect pathways. Previous research has demonstrated that these pathways are mediated by biogeochemical and biogeophysical processes [(Wang et al., 2020)](https://doi.org/10.5194/acp-20-11349-2020).
+
+Changes in land use and vegetation directly impact the emission of biogenic volatile organic compounds (BVOCs), which serve as precursors for ozone formation. For example, forests emit substantially higher levels of BVOCs, such as isoprene, compared to grasslands or croplands, leading to varying effects on ozone concentrations depending on the vegetation type. Additionally, land use changes influence land surface characteristics, altering climate variables such as temperature, humidity, and solar radiation. These biogeophysical changes can create conditions—such as warmer, drier regions—that favor higher ozone levels in certain areas.
+
+When both biogeochemical and biogeophysical effects are considered, the impact of land cover changes on ozone concentrations becomes more pronounced. For instance, shifts in vegetation type can simultaneously alter BVOC emissions and modify local meteorology, amplifying or mitigating ozone formation [(Wu et al., 2023)](https://doi.org/10.1016/j.atmosenv.2023.119936). The heterogeneity of land cover types further complicates these dynamics, as different types exhibit varying degrees of influence on ozone concentrations.
+
+Investigating how different land cover types predict ozone values is highly valuable for policymakers. Such insights can provide practical tools for managing ozone pollution, particularly in regions experiencing elevated ozone levels. By identifying the specific contributions of various land cover types to ozone formation, policymakers can implement targeted land use strategies to mitigate air pollution and protect public health.
+
+All variables included in the baseline model were checked for multicollinearity, and none were found to be highly correlated (greater than .75). This ensures that the variables independently contribute to the model without redundancy, enhancing the reliability of the results.
+
+```{r}
+baseline_model <- lm(o3_average_values ~ water_25km + 
+                     evergreen_needleleaf_forest_25km + 
+                     evergreen_broadleaf_forest_25km + 
+                     deciduous_needleleaf_forest_25km + 
+                     deciduous_broadleaf_forest_25km + 
+                     mixed_forest_25km + 
+                     closed_shrublands_25km + 
+                     open_shrublands_25km + 
+                     woody_savannas_25km + 
+                     savannas_25km + 
+                     grasslands_25km + 
+                     permanent_wetlands_25km + 
+                     croplands_25km + urban_and_built_up_25km, 
+              
+                   
+                   data = df_train)
+summary(baseline_model)
+
+```
+
+The summary function provides the output of the model, which includes coefficients (estimates) for each land cover type. These coefficients indicate how the average ozone values change with a one-unit increase in each land cover variable, while holding all other variables constant. For example, an additional unit of water within a 25 km radius is associated with a .04 unit increase in average o3 levels. In contrast, an additional unit of deciduous needleleaf forest area is expected to decrease average o3 levels by 3.67 units, a relatively large negative impact.
+
+The p-values indicate the statistical significance of each coefficient and help determine whether the relationship between the land cover variable and average O3 is likely to be real or merely due to chance. Significant variables (p \< .05) include: water_25km, evergreen_broadleaf_forest_25km, deciduous_needleleaf_forest_25km, deciduous_broadleaf_forest_25km, mixed_forest_25km, closed_shrublands_25km, open_shrublands_25km, woody_savannas_25km, grasslands_25km, permanent_wetlands_25km, croplands_25km, and urban_and_built_up_25km. Only savannas_25km is non-significant with a p-value of .28, which suggest this land type does not significantly affect average O3 concentrations.
+
+Based on the coefficients and p-values, it is evident that land cover types—particularly forests, wetlands, and urban areas—have a significant impact on average O3 levels, while areas like savannas show little to no meaningful effect.
+
+### Part 2.1.3: Evaluating the Baseline Model
+
+Now that the model has been trained, the next step is to evaluate its performance. This will be done on the training and testing set to determine how well it generalizes to new, unseen data. A set of evaluation metrics, including R-Squared (**rsq**) and Root Mean Squared Error (**RMSE**), will be used. R-Squared indicates how well the model explains the variance in the data, while RMSE measures the average error of the model's predictions, providing insight into the magnitude of the errors. These metrics will help assess the model's accuracy and reliability in predicting the dependent variable [(Grace-Martin, 2008)](https://www.theanalysisfactor.com/assessing-the-fit-of-regression-models/).
+
+```{r}
+reg_metrics <- metric_set(rsq, rmse)
+baseline_model %>% 
+  augment(new_data = df_train) %>% 
+  reg_metrics(truth = o3_average_values, estimate = .fitted)
+
+reg_metrics <- metric_set(rsq, rmse)
+baseline_model %>% 
+  augment(new_data = df_test) %>% 
+  reg_metrics(truth = o3_average_values, estimate = .fitted)
+```
+
+Both the training and testing data set produced the same values which could indicate potential over fitting of the model, where the model has learned the details in the training data to the extent it negatively impacts the model's performance on new data. The rsq value of .22 indicates that approximately 22.24% of the variance in the test data's average ozone values, is explained by the baseline model. This suggests that the model has limited explanatory power, and a significant portion of the variation in ozone levels remains unexplained.
+
+The RMSE of 5.67 indicates that, on average, the model's predictions for average O3 levels deviate by approximately 5.67 units. Since a lower RMSE is generally preferred, this value suggests that the model's predictions contain a relatively high level of error.
+
+To further evaluate model performance, a residual scatter plot will be created. This plot will provide a visual inspection of the residuals (the differences between the observed and predicted values), allowing for an assessment of how well the model fits the data and if any patterns remain in the residuals.
+
+```{r}
+theme_scatter <- function() {
+  
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        legend.position = "bottom")
+  
+}
+baseline_model %>% 
+  augment(new_data = df_test) %>% 
+  ggplot(aes(.fitted, .resid)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_point() +
+  theme_scatter() +
+  labs(x = "Fitted values", y = "Residuals")
+```
+
+The residual plot displays the residuals plotted against the fitted values from the regression model. The plot reveals a clear pattern where the spread of residuals increases as the fitted values rise, indicating the presence of heteroscedasticity. This suggests that the variance of the residuals is not constant across all levels of the fitted values. As the predicted values increase, the model's performance appears to become more variable. However, the residuals are mostly scattered randomly around the horizontal line at 0, with no distinct curved pattern or systematic trend, which indicates that the assumption of linearity is likely satisfied for most of the data.
+
+### Part 2.2.1: Feature Selection
+
+#### Univariate Regression Analysis
+
+Given the objective of improving the accuracy of predicting average O3 values, the next step is to enhance the model using feature selection. A univariate regression analysis will be conducted for each independent variable in the 'aq_bench_filtered' dataset to assess how each predictor correlates with the target variable, 'o3_average_values'. The advantage of using tibbles is their support for list columns, which will allow for the creation of a series of formulas. These formulas can then be used to build linear models with various combinations of predictors, leveraging the nested training data for evaluation.
+
+```{r}
+# Here the predictors are selected for the regression models, identifying all columns 1 to 49 in the data set but excluding o3_average_values.
+
+predictor_cols <- colnames(aq_bench_filtered)[1:49]
+predictor_cols <- predictor_cols[predictor_cols != "o3_average_values"] 
+# The regression formula where 'o3_average_values' is the dependent variable, and 'predictor' is the independent variables is created here.
+
+formulas <- paste("o3_average_values ~", predictor_cols)
+formulas
+
+# A data frame for each formula and separate models will be built using both the traing and testing data.
+
+df_tbl <-
+  crossing(formula = formulas,
+           nest(df_train, .key = "train_set"),
+           nest(df_test, .key = "test_set")) 
+df_tbl
+
+# This builds the linear models using the training set and applies predictions to the test sets.
+
+models <-
+  df_tbl %>% 
+  mutate(feature = sort(predictor_cols),
+         model = map2(formula, train_set, ~ lm(.x, data = .y)),
+         augmented = map2(model, test_set, ~ augment(.x, new_data = .y)))
+models
+
+# Here the data is unnested to extract the predictions and calculate the r-squared value for each univariate regression.
+
+r_squareds <- 
+  models %>% 
+  unnest(augmented) %>% 
+  group_by(feature) %>% 
+  rsq(truth = o3_average_values, estimate = .fitted) %>% 
+  arrange(desc(.estimate)) %>% 
+  mutate(feature = fct_reorder(feature, .estimate))
+
+r_squareds
+
+# Lastly, the results will be visualised onto a bar plot.
+theme_bar <- function() {
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank())
+}
+r_squareds %>% 
+  ggplot(aes(.estimate, feature)) +
+  geom_col() +geom_col(aes(fill = .estimate)) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_bar() +
+  theme(axis.text.y = element_text(size = 6)) + 
+  labs(x = "Test set r-squared", y = NULL)
+```
+
+The bar plot reveals high R-Squared values for variables related to various ozone metrics, such as 'o3_median' and 'o3_perc25'. This indicates a strong correlation with the target variable, 'o3_average_values', which aligns with the results from the multicollinearity test, where these variables exhibited a high correlation (greater than .75).
+
+Therefore, attention will be focused on the following variables: nightlight data, type of area, and population density. These variables, with R-Squared estimates ranging between .18 and .08, suggest they could be meaningful predictors for 'o3_average_values'. Incorporating these variables will diversify the feature set, reflect different dimensions of the problem, and potentially have a real-world impact on O3 levels [(Zhan et al., 2023)](https://doi.org/10.1038/s41612-023-00366-7).
+
+-   **Nightlight** **data** serves as a proxy for industrial activity, representing urbanization, human activity, and industrial emissions, all of which influence air quality and ozone concentrations. These variables can capture spatial patterns that are relevant for predicting ozone levels.
+
+-   **Type of area** provides insight into whether the area is urban, rural or suburban, all of which can significantly affect pollution levels and ozone formation.
+
+-   **Population density** is another key factor. As previously noted, there is an inverse relationship between population density and ozone levels, suggesting its relevance as a predictor.
+
+The three selected factors share a common theme: they capture human and industrial activities that are closely tied to urbanization, pollution, and ozone formation. These variables are strong theoretical predictors for O3 levels, as they directly relate to human activity, a major driver of pollution. While they also exhibit relatively high R-Squared scores, their real-world connections to urbanization and human activity make them particularly valuable
+
+#### Building the Lasso Model
+
+For feature selection, Lasso regression will be employed, which performs automatic feature selection by shrinking the coefficients of less relevant features to zero, effectively excluding them from the model [(Ranstam & Cook, 2018)](https://doi.org/10.1002/bjs.10895). Given the potential correlation between nightlight data, population density, and type of area, multicollinearity could be a concern. However, when testing for multicollinearity, the numeric variables did not exhibit high correlation with each other. Nonetheless, Lasso will still be applied to further reduce any potential risk by penalizing large coefficients, ensuring that the model remains stable and interpretable.
+
+By applying a penalty to the size of the coefficients, Lasso reduces the influence of collinear features, resulting in a more stable and interpretable model. Additionally, Lasso reduces the risk of over-fitting, as the penalty term can be tuned to control the amount of shrinkage applied to the model coefficients. Cross-validation with five folds will be used to tune the penalty term, ensuring that the model is validated on different subsets of the data [(Kangralkar, 2021)](https://medium.com/analytics-vidhya/regularization-and-cross-validation-how-to-choose-the-penalty-value-lambda-1217fa4351e5). This will help avoid over-fitting and provide a more robust estimate of the model's performance. The model will be trained and tested five times, and by using cross-validation alongside penalty tuning, the optimal level of regularization will be identified to ensure the model performs well on unseen data.
+
+```{r}
+# Here the Lasso Regression model is identified with tuned parameters.
+lasso_model <-
+  linear_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet")
+
+# This will set up the 5-fold cross-validation on the training data.
+set.seed(123)
+folds <- vfold_cv(df_train, v = 5)
+
+# Here the workflow is defined which ties together the lasso model and the formula specifying the relationship between the independent variables and dependent variables.
+lasso_workflow <-
+  workflow() %>%
+  add_model(lasso_model) %>%
+  add_formula(o3_average_values ~ nightlight_5km + nightlight_1km + type_of_area + population_density)
+
+# A grid of penalty values for tuning is set up.
+penalty_values <- c(0.001, 0.01, 0.1) 
+penalty_grid <- expand.grid(penalty = penalty_values)
+
+# This function performs the tuning of the Lasso model using penalty values and cross-validation folds.
+lasso_tuned <- tune_grid (
+  lasso_workflow,
+  resamples = folds, 
+  grid = penalty_grid
+)
+```
+
+### Part 2.2.2: Evaluating the Lasso Model
+
+The optimal penalty will be selected based on the R-squared value to ensure the best regularization strength is applied, thereby enhancing model performance and reducing the risk of over-fitting. Once the optimal penalty is determined, the model will be finalized and fitted to the training data. This will ensure the model is fully optimized before making predictions on new, unseen data. Predictions will then be made on the test set, and various metrics will be calculated to evaluate the quality of the predictions and the overall model performance. The results will be compared to those from the baseline model to assess whether the updated model performs better or worse.
+
+```{r}
+collect_metrics(lasso_tuned)
+best_penalty <- select_best(lasso_tuned, metric = "rsq")
+
+# This fits the finalized workflow on the training data with the best penalty.
+final_lasso_fit <- lasso_workflow %>%
+finalize_workflow(best_penalty) %>%
+fit(data = df_train)
+
+# Makes predictions and calculates metrics on the test set.
+predictions <- final_lasso_fit %>% augment(new_data = df_test)
+metrics <- predictions %>%
+reg_metrics(truth = o3_average_values, estimate = .pred)
+print(metrics)
+```
+
+The output shows an R-squared value of .24, meaning the model explains approximately 24% of the variance in average ozone values based on the selected predictors. While this is relatively low and suggests that the model does not account for most of the variability in the data, it does represent a 2.15% improvement over the baseline model. Although the R-squared value is modest, the model demonstrates that the selected variables—nightlight data, area type, and population density—are relevant in explaining the outcome, even if they do not capture the majority of the variation.
+
+The RMSE of 5.49 indicates that, on average, the model's predictions deviate by 5.49 units from the actual O3 average values. This model performs slightly better than the baseline model, with an RMSE that is .18 units smaller, suggesting a slight improvement in prediction accuracy. While this improvement is not substantial, it does indicate a marginal reduction in prediction errors. Overall, the model's performance remains relatively low, highlighting opportunities for further improvement in future iterations.
+
+Next, the coefficients from the Lasso model will be extracted and visualized in a bar plot, with the variables color-coded to indicate whether their relationship with average O3 values is positive or negative.
+
+```{r}
+lasso_coefficients <- tidy(final_lasso_fit$fit$fit)
+
+# This filters out the intercept, arranging features based on the coefficient's magnitude
+lasso_coefficients <- lasso_coefficients %>%
+  filter(term != "(Intercept)") %>%
+  arrange(desc(abs(estimate))) %>%
+  mutate(positive = estimate > 0)
+
+# This plots the LASSO coefficients.
+ggplot(lasso_coefficients, aes(x = abs(estimate), y = reorder(term, abs(estimate)), fill = positive)) +
+  geom_col() +
+  labs(x = "Lasso coefficient", y = "Feature", fill = "Positive?") +
+  theme_minimal() +
+  theme( panel.grid.minor = element_blank(), panel.grid.major.y = element_blank(), axis.text.y = element_text(size = 6)
+  )
+```
+
+The bar plot reveals that some variables have been entirely excluded from the model, as their coefficients have been reduced to zero by Lasso regularization. Specifically, population density and type_of_areaunknown have no coefficients, indicating that Lasso has shrunk them to zero. This suggests that population density does not have a significant relationship with o3_average_values when other predictors are included, and therefore, it does not contribute meaningful information to the model. Similarly, the variable type_of_areaunknown has been excluded, likely because it is either too sparse or lacks distinctiveness, rendering it ineffective for prediction.
+
+The remaining predictors have non-zero coefficients, indicating they retain some predictive value for o3_average_values. These variables were retained by the Lasso, as they were considered useful for explaining the target variable.
+
+To determine the optimal penalty value for the Lasso model, a plot will be created to visualize how varying penalty values impact model performance, specifically by observing changes in RMSE as the penalty parameter is adjusted.
+
+```{r}
+lasso <- partial(linear_reg, engine = "glmnet", mixture = 1)
+
+preds <-
+  crossing(penalty = c(0.0001, 0.001, 0.01, 0.1),
+           nest(df_train, .key = "train"),
+           nest(df_test, .key = "test")
+           ) %>% 
+  mutate(model = map(penalty, ~ lasso(penalty = .x)),
+         fit = map2(model, train, ~ fit(.x, o3_average_values  ~ nightlight_5km + nightlight_1km + type_of_area + population_density, data = .y)),
+         augmented = map2(fit, test, ~ augment(.x, new_data = .y)),
+         rmses = map(augmented, ~ rmse(.x, truth =o3_average_values, estimate = .pred)))
+
+preds %>% 
+  unnest(rmses) %>% 
+  ggplot(aes(x = as.factor(penalty), y = .estimate, group = 1)) +
+  geom_point() +
+  geom_line(linetype = "dashed") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank())
+```
+
+The plot demonstrates that a penalty of .01 strikes an optimal balance between reducing over-fitting and maintaining model accuracy. At this penalty level, insignificant variables are effectively eliminated, while meaningful predictors are retained, thereby optimizing the model’s performance.
+
+### Conclusion
+
+In this analysis, two different approaches for predicting average ozone values were explored: a baseline linear regression model and a Lasso regularization model. Both models use a set of predictors. The baseline focused on land cover types and natural features, meanwhile the Lasso model focused on human-related factors, such as nightlight data, area type and population density. The baseline provided a starting point, while the Lasso model sought to improve upon this by refining the set of predictors using feature selection and regularization.
+
+The below code creates a plot which compares the evaluation metrics (rsq, rmse) between the baseline model and lasso model.
+
+```{r}
+# This creates a data frame with the RMSE and R-squared values for both models
+model_comparison <- data.frame(
+  Model = c("Baseline", "Lasso"),
+  RMSE = c(5.67, 5.49),
+  R_squared = c(0.22, 0.24)
+)
+
+# Reshape the data for easier plotting
+model_comparison_long <- model_comparison %>%
+  gather(key = "Metric", value = "Value", RMSE, R_squared)
+
+# Create the plot
+ggplot(model_comparison_long, aes(x = Model, y = Value, fill = Model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ Metric, scales = "free_y") +
+  labs(title = "Comparison of RMSE and R-squared for Baseline and Lasso Models",
+       y = "Value", 
+       x = "Model") +
+  theme_minimal() +
+  scale_fill_manual(values = c("Baseline" = "lightblue", "Lasso" = "orange"))
+
+
+```
+
+When comparing the baseline model and the Lasso model, several key insights emerge. The Lasso model showed a slight improvement in both rsq (.24 vs .22) and RMSE (5.49 vs 5.67), indicating regularization helped refine the model and reduce prediction errors. Although the improvement was marginal, it is noteworthy that the Lasso's ability to eliminate irrelevant predictors led to a more efficient model that is less prone to over fitting.
+
+The overall explanatory power of both models remains relatively low, with rsq values indicating a substantial portion of average O3 levels remains unexplained. This suggests that there are likely other influencing factors that are not captured in the current set of predictors.
+
+The Lasso model highlights the importance of certain human industrial-activity related variables such as nightlight data and area type. These predictors also have strong theoretical links to ozone dynamics and their inclusion in the model suggests they are meaningful drivers of average O3 concentrations. However, the limited predictive ability of both models underscores the need for further refinement, potentially by incorporating additional variables. Despite the improvements observed with Lasso, the rsq value of .24 suggest the model is far from perfect.
+
+#### Limitations
+
+-   Missing data was assumed to be MNAR, however there is no simple, universally accepted test to confirm if this is true. This means the data may have required more complex imputation processes than multiple imputation.
+
+-   Whilst values beyond -999 were identified, outliers were not tested for which could have disproportionately influenced the performance of the models' parameters.
+
+-   Given the data set included different countries across the globe, they may have differed in their data collection methods. The resulting metrics may not be consistent or standardized. The accuracy may vary depending on the country's infrastructure and technological capabilities.
+
+-   Multicollinearity was not tested on categorical variables which may influence the model's coefficients.
+
+## Part 3
+
+In this section, the focus will be on working with a new data set aimed at predicting water potability, which refers to water that is safe and clean for consumption [(Tuser, 2022)](https://www.wwdmag.com/what-is-articles/article/10940236/what-is-potable-water). Access to safe drinking water is a critical need, and accurately predicting potability can help prevent waterborne diseases caused by contaminants such as bacteria or harmful chemicals. In regions where clean water is scarce, these predictions can assist in optimizing the allocation of resources.
+
+### Part 3.1.1: Cleaning and Exploring the Data
+
+The first step will be to load the data set, titled 'water_potability', for analysis.
+
+```{r}
+water_potability <- read_csv("water_potability.csv")
+View(water_potability)
+```
+
+As with the AQ Bench dataset, the 'vis_miss' function will be used to visualize and calculate the overall percentage of missing values. This step is crucial because missing data can have a significant impact on the accuracy and reliability of any analysis [(Buhl, 2023)](https://encord.com/blog/data-cleaning-data-preprocessing/). Additionally, the 'skim' function will be run to provide detailed insights into which variables contain missing data.
+
+```{r}
+vis_miss(water_potability)
+skim(water_potability)
+```
+
+The plot reveals that the data set has 4.4% missing data, with 95.6% of the data present. This is further supported by the 'skim' function, which indicates that missing values are present in the variables: pH, Sulfate, and Trihalomethanes. However, it is crucial to understand the underlying mechanism of the missing data to ensure the appropriate method is applied to handle it. To assess this, the MCAR (Missing Completely at Random) test, as proposed by [Jamshidian et al (2010)](https://doi.org/10.1007/s11336-010-9175-3) will be employed to test the null hypothesis of equality of covariances between the groups with missing and non-missing data
+
+```{r}
+out.MCAR.ws <- TestMCARNormality(water_potability, del.lesscases = 1)
+summary(out.MCAR.ws)
+```
+
+The MCAR test yielded a p-value of .92 for the non-parametric test of homoscedasticity. Since this value is greater than .05, the null hypothesis that covariances are equal can be accepted. This suggests that the data are MCAR, with no systematic pattern of missingness across different groupings.
+
+To address the missing data, multiple imputation will be employed. This technique replaces missing values with plausible estimates derived from the observed data, preserving the integrity of the original data set [(Li et al., 2016)](https://doi.org/10.1001/jama.2015.15281). Unlike list-wise deletion, which can lead to a substantial reduction in data and a loss of statistical power, multiple imputation helps maintain a complete data set for analysis. The method chosen is **Predictive Mean Matching** (PMM), with five imputed data sets specified. This approach accounts for the variability in missing data while minimizing the risk of over fitting.
+
+```{r}
+water_potability <- mice(water_potability, method = "pmm", m = 5, maxit = 10)
+summary(water_potability)
+water_potability <- complete(water_potability)
+head(water_potability)
+```
+
+To verify the success of the multiple imputation, the vis_miss function will be run again.
+
+```{r}
+vis_miss(water_potability)
+```
+
+The plot confirms successful imputation, with 100% of the data now present. Next, data transformation will ensure each variable in the 'water_potability' data set is correctly formatted for analysis. Continuous variables will be converted to numeric format, while categorical variables, such as the 'potability' target, will be converted to a factor format for machine learning models.
+
+```{r}
+# This line creates a vector containing the names of all continuous and categorical variables.
+continuous_vars <- c("ph", "Hardness", "Solids", "Chloramines", "Sulfate", "Conductivity", "Organic_carbon", "Trihalomethanes", "Turbidity" )
+categorical_vars <- c("Potability")
+
+# Here, the transformation is applied
+water_potability <- 
+  water_potability %>% 
+  mutate(across(all_of(continuous_vars), ~ as.numeric(.x)),
+         across(all_of(categorical_vars), ~ as.factor(.x)))
+```
+
+The count function will be used to determine the occurrences of each value in the Potability column, and a bar graph will visualize the results.
+
+```{r}
+count(water_potability, Potability)
+ggplot(water_potability, aes(x = Potability)) + 
+  geom_bar(fill = "skyblue", color = "black", width = 0.3) +  
+  labs(title = "Count of Water Potability Categories",
+       x = "Potability",
+       y = "Count") +
+  scale_x_discrete(labels = c("Unsafe (0)", "Safe (1)")) + 
+  theme_minimal()
+```
+
+The output reveals the distribution of the Potability variable as follows:
+
+-   0: 1998 instances of '**Unsafe**' water (Potability = 0)
+
+-   1: 1278 instances of '**Safe**' water (Potability = 1)
+
+There are more instances of unsafe drinking water than safe water, and this imbalance may influence the choice of evaluation metrics to be used in subsequent analyses.
+
+### Part 3.1.2: Predicting Potability using a Logistic Regression
+
+To predict Potability, a logistic regression model will be employed, as the Potability variable is binary. Logistic regression is well-suited for modeling binary outcomes and can help identify how changes in the predictor variables are related to the likelihood of water being safe to drink [(Sperandei, 2014)](https://doi.org/10.11613/bm.2014.003).
+
+Initially, the data will be split into training and testing sets, with 75% of the data allocated to the training set for fitting the logistic regression model. The model’s performance will then be evaluated on the remaining 25% of the data, which will serve as the test set. The 'set.seed' function will be used to ensure reproducibility of the results. Additionally, the data will be stratified by the Potability variable to preserve the proportion of Safe (1) and Unsafe (0) water instances in both the training and test sets, ensuring a representative split.
+
+#### Splitting the Data
+
+```{r}
+set.seed(123)
+# This splits the data set into training and testing sets
+split_grid <- initial_split(water_potability, prop = 0.75, strata = Potability)
+train <- training(split_grid)
+test <- testing(split_grid)
+```
+
+#### Building the Model
+
+The next stage involves building the logistic regression model, utilizing the Generalized Linear Model (GLM) engine, which is the underlying method used to fit the logistic regression. The 'set_mode' function is crucial as it specifies that the model will be used for a classification task, where the objective is to predict categorical outcomes—specifically, whether the water is safe to drink or not. The 'fit' function will then be employed to train the logistic regression model. In this case, all variables in the data set will be included, as the goal is to predict water potability.
+
+Incorporating all available predictors is important to fully understand how each one contributes to the likelihood of potability. By using all variables, the model captures the combined impact of these features on the target variable, which might not be apparent if only a subset of features were selected. This approach can also enhance the model's predictive accuracy, as the full set of predictors may explain a significant portion of the variance in potability. Additionally, including all variables provides valuable insights into which factors have the most significant effect on the likelihood of water being potable.
+
+Research has also demonstrated that each of the variables in the data set can contribute to water potability:
+
+-   **pH**: As it measures the acidity or alkalinity of water, extremes in pH can indicate contamination or unsafe conditions for drinking [(WHO, 2007)](https://cdn.who.int/media/docs/default-source/wash-documents/wash-chemicals/ph.pdf?sfvrsn=16b10656_4).
+
+-   **Hardness**: This represents the concentration of calcium and magnesium ions. High water hardness can affect the usability of water, which could be considered in potability assessments [(McVean, 2019)](https://www.mcgill.ca/oss/article/health-you-asked/you-asked-hard-water-dangerous-drink).
+
+-   **Solids**: This refers to the Total Dissolved Solids in the water and high levels can affect taste and signal contamination from chemicals or salts [(Research Council, 2024)](https://www.ncbi.nlm.nih.gov/books/NBK234169).
+
+-   **Chloramines**: This is a disinfectant used in water treatment and high levels could indicate over-treatment whilst low levels could mean harmful pathogens are unsuccessfully eliminated. Long term exposure can cause negative health effects [(Sensorex, 2021)](https://sensorex.com/the-effects-of-chlorine-in-water/?srsltid=AfmBOop6ekESqBHFAvVMd4WHswwYWCbY3HD044UVYXeUlPi6L1ItyzMw).
+
+-   **Sulfate**: High levels can cause a bitter taste and have laxative and cathartic effects which are undesirable in potable water [(WHO, 2004)](https://cdn.who.int/media/docs/default-source/wash-documents/wash-chemicals/sulfate.pdf?sfvrsn=b944d584_4).
+
+-   **Conductivity**: This indicates the water's ability to conduct electricity, correlating with ion concentrations. High levels can signal the presence of contaminants [(AtlasScientific, 2021)](https://atlas-scientific.com/blog/how-does-conductivity-affect-water-quality).
+
+-   **Organic Carbon:** This represents dissolved organic compounds which can indicate pollution or contamination from organic matter such as industrial waste [(Jones, 2020).](https://www.h2olabcheck.com/blog/view/total-organic-carbon-toc)
+
+-   **Trihalomethanes**: These can be harmful over long term exposure as they are byproducts of water disinfection processes, making them critical to potability. They have been associated with cancer and adverse reproductive outcomes [(Hood, 2005)](https://pmc.ncbi.nlm.nih.gov/articles/PMC1257669/).
+
+-   **Turbidity**: High turbidity can indicated suspended particles like microorganisms which can reduce disinfection efficiency . It is associated with higher levels of disease-causing microorganisms such as viruses and can cause symptoms like nausea, cramps and diarrhea [(Chandler, 2023)](ttps://dropconnect.com/turbidity-in-drinking-water/?srsltid=AfmBOop17BTqxtHqqNykzgugAQanlHOhfUx8F8K9At-wpL5OxwNorJWs).
+
+```{r}
+set.seed(123)
+logistic_model <-
+  logistic_reg() %>%
+  set_engine("glm") %>% 
+  set_mode("classification") %>% 
+  fit(Potability ~ ., data = train)
+summary(logistic_model$fit)
+```
+
+To improve the interpretability and usability of the logistic regression results, the raw coefficients will be exponentiated to transform them into odds ratios [(Curran, 2019).](https://www.thomascurran.co.uk/courses/pb130/lt7/) These odds ratios will then be organized into a structured, user-friendly format. This approach allows for a direct and clear understanding of the predictors and their effects while focusing solely on the statistical model, eliminating unnecessary complexity from the workflow.
+
+```{r}
+# This extracts the fitted model from the workflow and exponentiates the coefficients.
+set.seed(123)
+fitted_model <- logistic_model$fit
+exp_coefficients <- exp(coef(fitted_model))
+
+exp_coefficients_df <- data.frame(
+  Variable = names(exp_coefficients),
+  Odds_Ratio = round(exp_coefficients, 4) 
+)
+print(exp_coefficients_df)
+```
+
+The table shows the odds ratios for each predictor in the logistic regression model, providing insight into how changes in each variable affect the likelihood of water being classified as potable. The variables with odds ratios closer to 1 have minimal influence on predicting water potability,
+
+-   **Intercept:** The baseline odds of water being potable when all predictors are at their reference or mean values is less than 1, suggesting a lower likelihood of potability under these conditions.
+
+-   **pH:** For every one-unit increase in pH, the odds of water being potable increase by 1.74%.
+
+-   **Hardness**: For every one-unit increase in hardness, the odds of water being potable slightly decrease by .06%.
+
+-   **Solids**: For every one-unit increase in solids, the odds of potability increases negligibly, as the odds ratio is approximately 1.
+
+-   **Chloramines**: For every one-unit increase in chloramine levels, the odds of water being potable increases by 2.46%.
+
+-   **Organic Carbon:** For every one-unit increase in organic carbon, the odds of water being potable decrease by 1.86%.
+
+-   **Conductivity**: For every one-unit increase in conductivity, the odds of water being potbale decrease very slightly.
+
+-   **Sulfate**: For every one-unit increase in sulfate, the odds of water being potable decrease by .12%.
+
+-   **Trihalomethanes**: For every one-unit increase in trihalomethanes, the odds of water being potable decrease by .12%.
+
+-   **Turbidity**: For every one-unit increase in turbidity, the odds of water being potable increase by 4.64%.
+
+### Part 3.1.3: Evaluating the Logistic Model
+
+The model's performance will now be evaluated by assessing its predictions on both the training and testing data sets. This evaluation will help determine whether the model has over fitted to the training data or is generalizing well to unseen data. The 'augment' function will generate predicted probabilities for both data sets, allowing the model's ability to correctly classify outcomes (e.g., whether water is potable or not) to be assessed.
+
+A confusion matrix will be constructed to compare the predicted outcomes with the true outcomes, providing insights into the number of false positives, false negatives, true positives, and true negatives [(Ng, 2022)](https://jadangpooiling.medium.com/heatmap-for-correlation-matrix-confusion-matrix-extra-tips-on-machine-learning-b0377cee31c2). This is essential for evaluating model performance, especially in cases with imbalanced classes. A heatmap will be created to visualize the confusion matrix, offering a more intuitive view of the model's predictions and helping to identify areas where the model is performing well or struggling. Additional performance metrics such as precision, recall, F1 score, and accuracy for the positive class (Potability = 1) will be provided in the summary.
+
+```{r}
+set.seed(123)
+train_predictions <- logistic_model %>%
+  augment(new_data = train, type.predict = "response") %>%
+  conf_mat(truth = Potability, estimate = .pred_class)
+train_predictions
+summary(train_predictions, event_level = "second")
+
+# This will develop the heatmap
+logistic_model %>% 
+    augment(new_data=train,type.predict = "response") %>% 
+    conf_mat(truth = Potability, estimate = .pred_class) %>%
+    autoplot(type="heatmap")
+```
+
+The confusion matrix shows:
+
+-   **True Negatives:** 1498
+
+    The number of instances where the model correctly predicted '0' (non-potable) when the actual label was 0.
+
+-   **False Negative:** 956
+
+    The number of instances where the model predicted '0' (non-potable) when the actual label was '1'. Here the model made an error by classifying non-potable water as potable.
+
+-   **False Positive:** 0
+
+    The number of instances where the model predicted '1' when the actual label was '0'. As the value is 0, the model never mistakenly predicted potable water when it wasn't.
+
+-   **True Positives:** 2
+
+    The number of instances where the model correctly predicted '1' when the actual label was also '1'. As there is only 2, this reflects the model's poor performance for the minority class, potable water.
+
+    The evaluation metrics reveal:
+
+-   The **accuracy score** of .61 indicates that the model is correct 61% of the time overall. However, in imbalanced data sets like this one, accuracy can be misleading because it is biased toward the majority class (non-potable water).
+
+-   The **specificity score** of 1 means the model perfectly identifies all negative instances ('0'). Since there are no false positives, this is 1 (or 100%). This shows that the model is highly effective at correctly predicting instances where the outcome is negative, which is crucial in this instance where a false positive is dangerous.
+
+-   The **precision score** of 1 means when the model predicts '1', it is always correct. However, this could be misleading as the models predictions of '1' are so rare.
+
+-   The **recall score** of .002 is the ratio of correctly predicted positive observations to all the actual positives. It indicates the model misses almost all the potable water instances and predicts non-potable most of the times.
+
+-   The **F1 score** of .004 indicates extremely poor model performance, as the value is very close to zero. The F1 score is the harmonic mean of precision and recall, and in this case, the model demonstrates very high precision due to predicting very few '1's, but it has an exceptionally low recall. This suggests that the model is ineffective at identifying positive instances ('1's), despite being accurate when it does make a positive prediction. The imbalance between precision and recall reflects the model's inability to correctly capture most of the positive cases, which significantly reduces its overall effectiveness.
+
+The predictions, confusion matrix, and heatmap for the test data will now be generated. These will provide insights into the model's performance on unseen data, comparing the actual values to the predicted values, particularly in the context of imbalanced data.
+
+```{r}
+set.seed(123)
+test_predictions <- logistic_model %>%
+  augment(new_data = test, type.predict = "response") %>%
+  conf_mat(truth = Potability, estimate = .pred_class)
+test_predictions
+summary(test_predictions, event_level = "second")
+#  This will develop the heatmap
+logistic_model %>% 
+    augment(new_data=test,type.predict = "response") %>% 
+    conf_mat(truth = Potability, estimate = .pred_class) %>%
+    autoplot(type="heatmap")
+```
+
+The confusion matrix shows the model has very poor performance with respect to predicting potable water (1):
+
+-   **True Negatives:** 499
+
+    The model correctly identified 499 cases of non-potable water.
+
+-   **False Positives:** 1
+
+    The model mistakenly predicted 1 case of non-potable water as potable. This suggests the model is able to identify non-potable water relatively well.
+
+-   **False Negatives:** 320
+
+    The majority of errors, where the model predicted non-potable water for actual potable cases, demonstrating its inability to recognize the minority class effectively.
+
+-   **True Positives:** 0
+
+    The model correctly didn't identify any cases of potable water indicates the model is not very effective at detecting potable water.
+
+    The evaluation metrics reveal:
+
+-   The **accuracy** score of .61 indicates the model correctly predicts the potability of water around 61% of the time, however it is misleading due to class imbalance. The model is biased towards the majority class, inflating its overall accuracy despite poor minority class performance.
+
+-   The **specifcity score** of .99 indicates the model is effective at recognising when water is not potable.
+
+-   The **precision** score of 0 means the model does not reliably identify potable water when it predicts '1'.
+
+-   The **recall** score of 0 measures how many actual potable water cases the model identifies correctly. This means the model failed to detect any of the potable water cases highlighting a critical flaw in the model's ability to capture the minority class.
+
+-   The **F1 score** of 0 is because the precision and recall score is also 0. This confirms the model performs extremely poorly for the minority class.
+
+The metrics highlight that the model is struggling to identify the minority class (potable water), which is a common challenge when a data set is imbalanced and the majority class (non-potable water) dominates the model's predictions. Given detecting potable water is a high-priority task as it could be dangerous to miss potable water, improving recall is critical. However, the model's recall is extremely low and this needs to be addressed to avoid missing out on potable water predictions.
+
+An ROC (Receiver Operating Characteristic) curve plots the true positive rate (TPR) against the false positive rate (FPR), providing a visual representation of the trade-off between precision and recall [(Google, 2019)](https://developers.google.com/machine-learning/crash-course/classification/roc-and-auc). It evaluates the model's performance across different classification thresholds, showing how the model's behavior changes as the threshold is adjusted. Unlike accuracy, the ROC curve is less affected by class imbalance and offers a more reliable assessment of model performance. The AUC (Area Under the Curve) score is a single metric summarizing the ROC curve, reflecting the probability that the model will rank a randomly selected positive instance higher than a randomly selected negative one. A higher AUC score, closer to 1, indicates better model performance. An ROC curve will be plotted for the model against the training set.
+
+```{r}
+set.seed(123)
+train_preds <- 
+  logistic_model %>% 
+  augment(new_data = train, type.predict = "response")
+
+train_preds %>%
+  roc_curve(truth = Potability, .pred_1, event_level = "second") %>%
+  autoplot()
+logistic_model %>% 
+    augment(new_data=train,type.predict = "response") %>% 
+    roc_auc(truth = Potability, .pred_1, event_level="second")
+```
+
+A perfect ROC curve would hug the top-left corner, indicating that the classifier has high sensitivity (correctly identifying most positive cases) and a low false positive rate (rarely misclassifying negative cases as positive) [(Çorbacıoğlu & Aksel, 2023)](https://doi.org/10.4103/tjem.tjem_182_23.). However, the current ROC curve does not demonstrate this ideal performance. The AUC (Area Under Curve) is .52, which suggests that the model's performance is only slightly better than random guessing. This low AUC indicates that the model has limited predictive power and struggles to effectively distinguish between the two classes (Potability = 0 and Potability = 1).
+
+The same ROC curve and AUC score will be evaluated using the test data set, as it provides a better estimate of the model's generalization performance. Unlike the training data, the test data set was not used in model training, making it a more accurate reflection of how the model will perform on unseen data.
+
+```{r}
+test_preds <- 
+  logistic_model %>% 
+  augment(new_data = test, type.predict = "response")
+
+test_preds %>%
+  roc_curve(truth = Potability, .pred_1, event_level = "second") %>%
+  autoplot()
+logistic_model %>% 
+    augment(new_data=test,type.predict = "response") %>% 
+    roc_auc(truth = Potability, .pred_1, event_level="second") 
+```
+
+The ROC curve for the test data set closely mirrors the one generated from the training set, indicating consistent model behavior across both data sets. The AUC score of .51 on the test set is very similar to the training set score of 0.52, with a minimal difference of just .01. This suggests that the model has limited predictive ability on both data sets, as both AUC scores are close to .5. The slight decrease in AUC from training to testing indicates a small drop in performance when applied to unseen data. While this minor reduction is not concerning in terms of generalization, the overall low AUC scores suggest that the model struggles to effectively distinguish between potable and non-potable water classes.
+
+Given the consistent poor performance across both the training and testing data sets, the issue appears to lie with the model itself rather than over-fitting. To enhance performance, a random forest model will be applied.
+
+### 3.2.1: Building the Random Forest Model
+
+Random forest is an ensemble learning method that aggregates the predictions of multiple decision trees [(IBM, 2023)](https://www.ibm.com/topics/random-forest). Each tree in the forest is trained on a random subset of features, which helps reduce the likelihood of over-fitting compared to a single decision tree. This technique is particularly effective in handling large numbers of input features. By averaging the predictions of several trees, random forest creates a more robust and generalized model. Additionally, it can assess the importance of each feature in making predictions, which can provide valuable insights into the key factors influencing water potability. This ability to identify critical features can aid in understanding the primary determinants of whether water is safe to drink.
+
+The 'themis' package will be utilized to handle the imbalanced data through the pre-processing step 'step_upsample'. This technique increases the number of instances in the minority class by duplicating samples, which balances the class distribution. By doing so, the model will not be biased toward predicting the majority class, which is often the dominant class in imbalanced data sets. This is especially important for cases like detecting potable water, where the minority class is of greater interest. Upsampling improves the recall for the minority class, providing a clearer picture of the model’s performance on both classes [(Syntho, 2024)](https://www.syntho.ai/upsampling/).
+
+The random forest model will then be specified with the 'importance = TRUE' flag to evaluate feature importance. Random forests are known for their robustness in classification tasks, and this flag will help us interpret the model's decision-making process. The entire workflow, combining pre-processing (upsampling) and model training, ensures that the process is both efficient and modular. After fitting the model on the upsampled training data, predictions will be made and the model's performance will be evaluated.
+
+```{r}
+set.seed(123)
+tree_rec <-
+  recipe(Potability ~ ., data = train) %>%
+  step_upsample(Potability)
+
+rf_spec <- 
+   rand_forest() %>%
+  set_engine("randomForest", importance = TRUE) %>%
+  set_mode("classification")
+
+wflow_forest <- 
+  workflow() %>% 
+  add_recipe(tree_rec) %>% 
+  add_model(rf_spec)
+
+random_forest_model <- 
+  wflow_forest %>% 
+  fit(data = train)
+```
+
+### Part 3.2.2: Evaluating the Random Forest Model
+
+As with the previous models, it is crucial to evaluate the performance of the random forest model to assess its predictive capabilities. Cross-validation will be employed to evaluate the model's generalization ability by splitting the data into multiple subsets [(Melanie, 2023)](https://datascientest.com/en/the-importance-of-cross-validation). This approach ensures the model is tested on different portions of the data, reducing the risk of over-fitting and providing a more robust estimate of its performance. Stratification will be applied to maintain the class distribution in each fold, ensuring it mirrors the overall data set [(Ye et al., 2013)](https://doi.org/10.1016/j.patcog.2012.09.005). The chosen evaluation metrics will offer a comprehensive assessment of model performance, enabling a comparison between the random forest model and the baseline model.
+
+```{r}
+set.seed(123)
+cv_folds <- vfold_cv (train, v = 5, strata = Potability)
+
+rf_cv_results <- fit_resamples (
+  wflow_forest,
+  resamples = cv_folds,
+  metrics = metric_set(roc_auc, accuracy, precision, f_meas, specificity)
+)
+rf_cv_results %>%
+  collect_metrics ()
+```
+
+This next step ensures that the trained Random Forest Model is performing adequately on the training data set both numerically and visually. It is a critical step to validate the model's effectiveness before proceeding to evaluate its performance on test or unseen data.
+
+```{r}
+set.seed(123)
+final_rf_model <- fit(wflow_forest, data = train)
+
+conf_mat_training <- random_forest_model %>% 
+  augment(new_data = train) %>%
+  conf_mat(truth = Potability, .pred_class) 
+
+conf_mat_training %>%
+  summary()
+
+conf_mat_training %>%
+  autoplot(type = "heatmap")
+```
+
+-   **True Negatives:** 1498
+
+    The model correctly identified 829 cases of non-potable water.
+
+-   **False Positives:** 0
+
+    The model did not mistakenly predict any case of non-potable water as potable water. This suggests the model is conservative in predicting potable water.
+
+-   **False Negatives:** 129
+
+    The model incorrectly predicted 129 cases of potable water as non potable. This is problematic as it shows the model is missing many true potable water cases, which is critical in applications where identifying potable water accurately is important.
+
+-   **True Positives:** 829
+
+    The model correctly identified 829 cases of potable water. This is a large number, indicating the model recognizes potable water to some extent, but the False Negative rate highlights room for improvement.
+
+    The evaluation metrics reveal:
+
+-   The **accuracy score** of .95 indicates the model correctly predicts the potability of water around 95% of the time. Since the data set has been upsampled, this accuracy should now represent the balanced model performance across both classes rather than being skewed by an imbalance.
+
+-   The **specificity score** of .87 is generally good as it indicates the model is reliable at recognizing non-potable water, which helps minimize the risk of incorrectly classifying unsafe water as safe.
+
+-   The **precision score** of .92 means the model correctly identifies potable water 92% of the time when it predicts '1'. This is important in this scenario of evaluating the reliability of 'potable' predictions, as false positives have serious consequences.
+
+-   The **recall score** of 1 indicates the model is identifying all potable cases without missing any.
+
+-   The **F1 score** of .96 suggests strong overall performance, given both precision and recall are high.
+
+From this it appears the random forest training model is performing well and effectively handles both classes due to upsampling. Now the same code will be applied to the testing data set.
+
+```{r}
+set.seed(123)
+conf_mat_testing <- random_forest_model %>% 
+  augment(new_data = test) %>%
+  conf_mat(truth = Potability, .pred_class) 
+
+conf_mat_testing %>%
+  summary()
+
+conf_mat_testing %>%
+  autoplot(type = "heatmap")
+```
+
+-   **True Negatives:** 439
+
+    The model correctly classified 439 cases of non-potable water.
+
+-   **False Positives:** 61
+
+    The model incorrectly classified 61 non-potable water samples as potable. This is concerning as falsely labeling unsafe water as potable could lead to health risks.
+
+-   **False Negatives:** 214
+
+    The model failed to identify 214 cases of potable water, classifying them as non-potable. In this context, this is dangerous as missing potable water can prevent access to safe drinking water.
+
+-   **True Positives:** 106
+
+    The model correctly identified 106 cases of potable water. It highlights a significant gap given the high false negative rate.
+
+The evaluation metrics indicate:
+
+-   The **accuracy score** of .67 indicates the model correctly predicts the potability of water 67% of the time. Since the data set was upsampled, this accuracy reflects the model's balanced performance across both classes, rather than being skewed by an imbalance.
+
+-   The **specificity score** of .33 indicates that the model is struggling to identify non-potable water in the test set. This is problematic as it could result in a higher risk of unsafe water being incorrectly classified as safe.
+
+-   The **precision score** of .66 means when the model predicts water is potable, it is correct 66% of the time. This is important in the current scenario where false positives have significant consequences. While the precision score is moderate, there is still room for improvement to increase reliability.
+
+-   The **recall score** of .88 indicates the model identifies 88% of actual potable water cases correctly. This means it successfully captures most of the true positive instances of potable water. Missing potable water cases could result in missed opportunities to identify safe drinking water.
+
+-   The **F1 score** of .76 suggests the model demonstrates reasonable effectiveness in managing the trade-off between false positives and false negatives. Improvements to precision and accuracy could further enhance its utility.
+
+A feature importance plot will demonstrate which features are most influential in making predictions in the random forest model and how much this feature is used in each tree of the model
+
+```{r}
+random_forest_fit <- random_forest_model %>% extract_fit_engine()
+random_forest_fit %>%
+  vip(geom = "col", aesthetics = list(fill = "lightblue", alpha = 0.8)) +
+  theme_minimal()
+  scale_y_continuous(expand = c(0, 0))
+```
+
+The plot reveals that all the variables are effective at predicting Potability, with each variable being above 50 in the importance score which is Gini Importance. This indicates all variables contribute to the model's accuracy and decision making but the magnitude of their contribution differs. pH most strongly influences whether the water is classified as potable or not, closely followed by Sulfate. This aligns with real world findings, as pH often reflects the chemical balance of water and sulfate concentrates can indicate the presence of certain contaminants.
+
+An ROC curve and AUC score will now be used to evaluate the performance of the random forest model using the test data set, to help assess classification performance across various thresholds.
+
+```{r}
+set.seed(123)
+  random_forest_model %>% 
+  augment(test) %>%
+  roc_auc(truth = Potability, .pred_1, event_level="second") 
+
+  random_forest_model %>% 
+  augment(test) %>%
+  roc_curve(truth=Potability, .pred_1, event_level="second") %>%
+  autoplot() + 
+  geom_point(aes(x=1-specificity, y=sensitivity, color=.threshold)) + 
+  scale_color_gradient(name="Threshold", low = "orange", high="blue", limits=c(0, 1)) + 
+  labs(title="Meet the ROC curve",
+       subtitle="This model performs better than a random guess, and better than both non-linear SVM and decision tree!", 
+       x="(1 - specificity) = 1 - TN/N",
+       y="(sensitivity) = TP/P")
+```
+
+The ROC and AUC (.66) demonstrate that the model has moderate discriminatory power. Whilst it is better than random guessing and can distinguish potable from non-potable water 66.3% of the time, it is far from perfect.
+
+## Discussion
+
+The evaluation of the two models for predicting water potability reveals significant differences in their performance and highlights the challenges associated with working on imbalanced data sets in critical application like safe water prediction.
+
+The below code creates a graph which compares the key evaluation metrics for the baseline logistic regression model and random forest model. It will specifically use the F1 and AUC Score to draw the most meaningful insights. Given both precision and recall are crucial, particularly in imbalanced data sets,the F1 score is a harmonic mean between the two [(Kundu, 2022)](https://www.v7labs.com/blog/f1-score-guide). It provides a single number that balances the trade off between these two metrics, making it particularly valuable in the current context where low false positives and false negatives are desirable. The F1 score is especially useful in imbalances data sets where accuracy alone may not tell the full story as it can be inflated by a dominant class. It helps to understand the model's performance in detecting the minority class, which is crucial when identifying potable water cases.
+
+The AUC measures the model's ability to distinguish between potable and non-potable across various classification thresholds. It gives an overall assessment of the model's performance in terms of its ability to correctly rank instances. It provides a more reliable picture of performance.
+
+```{r}
+# This code will create a data frame with evaluation metrics
+evaluation_metrics <- data.frame(
+  Model = c("Logistic Regression", "Logistic Regression", 
+            "Random Forest", "Random Forest"),
+  Metric = c("F1 Score", "AUC", "F1 Score", "AUC"),
+  Value = c(0.00, 0.51, 0.76, 0.66)
+)
+
+# The plot will be created with evaluation metrics
+ggplot(evaluation_metrics, aes(x = Model, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", position = position_dodge(), width = 0.6) +
+  geom_text(
+    aes(label = round(Value, 2)), 
+    position = position_dodge(width = 0.6), 
+    vjust = -0.5, 
+    size = 4
+  ) +
+  scale_fill_manual(values = c("orange", "lightblue")) +
+  labs(
+    title = "Comparison of Evaluation Metrics",
+    subtitle = "Test Set Performance: Logistic Regression vs Random Forest",
+    x = "Model",
+    y = "Metric Value"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+```
+
+The logistic regression model performed poorly overall. While it exhibited near-perfect specificity (.99), meaning it never misclassified non-potable water as potable, it failed to identify potable water effectively, with an F1 score of .00. This indicates a significant bias towards the majority class which dominated the data set. The AUC score of .51 suggests the model performed no better than random guessing at distinguishing between potable and non-potable water. The model's inability to detect potable water,renders the model unsuitable for real-world applications, where false negatives are critical errors due to resource wastage and missed opportunity.
+
+The Random Forest Model demonstrated better overall performance, particularly after addressing class imbalance through upsampling. It achieved an F1 score of .76, indicating it successfully identified most of the potable water cases. However, the model had 61 false positives, meaning it often mislabeled non-potable water as potable. This trade off, while improving sensitivity to potable water, comes at the cost of introducing potential health risks if unsafe water is mistakenly classified as safe. The AUC score of .64 indicates moderate discriminatory power, outperforming the logistic model. Additionally, the F1 score reflects a better trade-off between precision and recall. The model also was able to identify significant predictors of potability, such as pH and sulfate levels, aligning with real world safety indicators. This insight is valuable for understanding the factors predicting water potability.
+
+The key differences between the two models lies in the treatment of the minority class (potable water). The baseline model prioritized specificity at the expense of recall, making it unsuitable for practical use where identifying potable water is critical. Conversely, the random forest model improved recall but at the cost of increased false positives. This trade-off is more acceptable in the given context, as prioritizing recall ensures fewer potable water cases are missed which is essential for maximizing access to safe drinking water. However, reducing false positives is crucial to minimize risks associated with unsafe drinking water.
+
+### Limitations
+
+-   Multiple imputation was used to handle missing data and this has certain limitations. Imputation can smooth over problems with the data, such as structural issues in the data set or biases in data collection. It also accounts for uncertainty by creating multiple data sets, but doesn't always reflect the uncertainty in the missing data process.
+-   Outliers were not tested for which could have a disproportionate effect on the coefficients in the model.
+-   Metrics like F1 score may not fully capture the variability in model performance across different data sets.
+
+## Open AI Use
+
+ChatGPT was used to assist in creating a separate data set, which enabled me to generate a ggplot comparing the evaluation metrics of the baseline model and the lasso model in Part 2. Additionally, it provided guidance in interpreting a feature importance plot and helped confirm my understanding of the Little MCAR test output to ensure the accuracy of my conclusion on whether the missing data was MCAR.
+
+## Bibliography
+
+Atlas Scientific (2021). *How Does Conductivity Affect Water Quality?* \[online\] Atlas Scientific. Available at: <https://atlas-scientific.com/blog/how-does-conductivity-affect-water-quality/.>
+
+Belgian Interregional Environment Agency (n.d.). *Why are ozone concentrations higher in rural areas than in cities? — English*. \[online\] www.irceline.be. Available at: <https://www.irceline.be/en/documentation/faq/why-are-ozone-concentrations-higher-in-rural-areas-than-in-cities.>
+
+Borck, R. and Schrauth, P. (2020). Population density and urban air quality. *Regional Science and Urban Economics*, 86, p.103596. doi:<https://doi.org/10.1016/j.regsciurbeco.2020.103596>.
+
+Buhl, N. (2023). *Mastering Data Cleaning & Data Preprocessing for Machine Learning*. \[online\] encord.com. Available at: <https://encord.com/blog/data-cleaning-data-preprocessing/.>
+
+Çorbacıoğlu, Ş.K. and Aksel, G. (2023). Receiver operating characteristic curve analysis in diagnostic accuracy studies: A guide to interpreting the area under the curve value. *Turkish Journal of Emergency Medicine*, \[online\] 23(4), pp.195–198. doi:<https://doi.org/10.4103/tjem.tjem_182_23.>
+
+Council, R. (2024). *Solid Particles in Suspension*. \[online\] Nih.gov. Available at: <https://www.ncbi.nlm.nih.gov/books/NBK234169>.
+
+Curran, T. (2019). *Chi-Square and Logistic Regression (LT7)*. \[online\] Thomas Curran. Available at: <https://www.thomascurran.co.uk/courses/pb130/lt7/.>
+
+DEFRA (2023). *Concentrations of ozone*. \[online\] GOV.UK. Available at: <https://www.gov.uk/government/statistics/air-quality-statistics/concentrations-of-ozone.>
+
+Google (2019). *Classification: ROC Curve and AUC  \|  Machine Learning Crash Course*. \[online\] Google Developers. Available at: <https://developers.google.com/machine-learning/crash-course/classification/roc-and-auc.>
+
+Grace-Martin, K. (2008). *Assessing the Fit of Regression Models - the Analysis Factor*. \[online\] The Analysis Factor. Available at: <https://www.theanalysisfactor.com/assessing-the-fit-of-regression-models/.>
+
+Hood, E. (2005). Tap Water and Trihalomethanes: Flow of Concerns Continues. *Environmental Health Perspectives*, \[online\] 113(7), p.A474. Available at: <https://pmc.ncbi.nlm.nih.gov/articles/PMC1257669/.>
+
+IBM (2023). *What Is Random Forest? \| IBM*. \[online\] www.ibm.com. Available at: <https://www.ibm.com/topics/random-forest.>
+
+III, W.C. (2023). *Turbidity in Drinking Water: Understanding and Addressing the Issue - DROP*. \[online\] DROP. Available at: <https://dropconnect.com/turbidity-in-drinking-water/?srsltid=AfmBOop17BTqxtHqqNykzgugAQanlHOhfUx8F8K9At-wpL5OxwNorJWs>
+
+Jamshidian, M. and Jalal, S. (2010). Tests of Homoscedasticity, Normality, and Missing Completely at Random for Incomplete Multivariate Data. *Psychometrika*, 75(4), pp.649–674. doi:<https://doi.org/10.1007/s11336-010-9175-3.>
+
+Jones, S. (2020). *Total Organic Carbon in Drinking Water — Water Library \| Acorn Water*. \[online\] www.h2olabcheck.com. Available at: <https://www.h2olabcheck.com/blog/view/total-organic-carbon-toc.>
+
+Kangralkar, S. (2021). *Regularization and Cross-Validation — How to choose the penalty value (lambda)*. \[online\] Analytics Vidhya. Available at: <https://medium.com/analytics-vidhya/regularization-and-cross-validation-how-to-choose-the-penalty-value-lambda-1217fa4351e5.>
+
+Kundu, R. (2022). *F1 Score in Machine Learning: Intro & Calculation*. \[online\] www.v7labs.com. Available at: <https://www.v7labs.com/blog/f1-score-guide.>
+
+Li, P., Stuart, E.A. and Allison, D.B. (2015). Multiple Imputation: A Flexible Tool for Handling Missing Data. *JAMA*, 314(18), p.1966. doi:<https://doi.org/10.1001/jama.2015.15281.>
+
+McVean, A. (2019). *McGill University*. \[online\] Office for Science and Society. Available at: <https://www.mcgill.ca/oss/article/health-you-asked/you-asked-hard-water-dangerous-drink.>
+
+Melanie (2023). *The importance of Cross Validation*. \[online\] Data Science Courses \| DataScientest. Available at: <https://datascientest.com/en/the-importance-of-cross-validation.>
+
+Ministry for the Environment (2021). *Nitrogen dioxide*. \[online\] Ministry for the Environment. Available at: <https://environment.govt.nz/facts-and-science/air/air-pollutants/nitrogen-dioxide-effects-health/.>
+
+Ng, J. (2022). *Heatmap For Correlation Matrix & Confusion Matrix \| Extra Tips On Machine Learning*. \[online\] Medium. Available at: <https://jadangpooiling.medium.com/heatmap-for-correlation-matrix-confusion-matrix-extra-tips-on-machine-learning-b0377cee31c2>
+
+P. Vatcheva, K. and Lee, M. (2016). Multicollinearity in Regression Analyses Conducted in Epidemiologic Studies. *Epidemiology: Open Access*, \[online\] 06(02). doi:<https://doi.org/10.4172/2161-1165.1000227.>
+
+Ranstam, J. and Cook, J.A. (2018). LASSO regression. *British Journal of Surgery*, 105(10), pp.1348–1348. doi:<https://doi.org/10.1002/bjs.10895.>
+
+RUBIN, D.B. (1976). Inference and missing data. *Biometrika*, 63(3), pp.581–592. doi:<https://doi.org/10.1093/biomet/63.3.581.>
+
+Sensorex (2021). *The Effects of Chlorine in Water - Sensorex Liquid Analysis Technology*. \[online\] Sensorex Liquid Analysis Technology. Available at: <https://sensorex.com/the-effects-of-chlorine-in-water/?srsltid=AfmBOop6ekESqBHFAvVMd4WHswwYWCbY3HD044UVYXeUlPi6L1ItyzMw>
+
+Sperandei, S. (2014). Understanding Logistic Regression Analysis. *Biochemia Medica*, 24(1), pp.12–18. doi:<https://doi.org/10.11613/bm.2014.003.>
+
+Statistic Solutions (2009). *Correlation in SPSS - Statistics Solutions*. \[online\] Statistics Solutions. Available at: <https://www.statisticssolutions.com/correlation-in-spss/.>
+
+Syntho (2024). *Upsampling \| Syntho*. \[online\] Synthetic data software. Available at: <https://www.syntho.ai/upsampling/>
+
+Tuser, C. (2022). *StackPath*. \[online\] www.wwdmag.com. Available at: <https://www.wwdmag.com/what-is-articles/article/10940236/what-is-potable-water.>
+
+Wang, L., Tai, A.P.K., Tam, C.-Y., Sadiq, M., Wang, P. and Cheung, K.K.W. (2020). Impacts of future land use and land cover change on mid-21st-century surface ozone air quality: distinguishing between the biogeophysical and biogeochemical effects. *Atmospheric Chemistry and Physics*, 20(19), pp.11349–11369. doi:<https://doi.org/10.5194/acp-20-11349-2020.>
+
+WHO (2004). *Sulfate in Drinking-water Background document for development of WHO Guidelines for Drinking-water Quality*. \[online\] Available at: <https://cdn.who.int/media/docs/default-source/wash-documents/wash-chemicals/sulfate.pdf?sfvrsn=b944d584_4.>
+
+World Health Organization (2007). *Revised background document for development of WHO Guidelines for Drinking-water Quality*. \[online\] Available at: <https://cdn.who.int/media/docs/default-source/wash-documents/wash-chemicals/ph.pdf?sfvrsn=16b10656_4.>
+
+Wu, L., Yang, L., Zhang, Y., Wu, G., Chen, W., Deng, S., Situ, S., Chang, M. and Wang, X. (2023). Prediction of ozone pollution impacted by vegetation planning in the Pearl River Delta, China. *Atmospheric Environment*, 309, pp.119936–119936. doi:<https://doi.org/10.1016/j.atmosenv.2023.119936.>
+
+Ye, Y., Wu, Q., Zhexue Huang, J., Ng, M.K. and Li, X. (2013). Stratified sampling for feature subspace selection in random forests for high dimensional data. *Pattern Recognition*, 46(3), pp.769–787. doi:<https://doi.org/10.1016/j.patcog.2012.09.005.>
+
+Zhan, J., Ma, W., Song, B., Wang, Z., Bao, X., Xie, H.-B., Chu, B., He, H., Tao, J. and Liu, Y. (2023). The contribution of industrial emissions to ozone pollution: identified using ozone formation path tracing approach. *npj climate and atmospheric science*, 6(1). doi:<https://doi.org/10.1038/s41612-023-00366-7.>
